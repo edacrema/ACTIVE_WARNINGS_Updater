@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data files
+data/*.xlsx
+data/*.csv
+
+# Output files
+active_warnings_outputs/
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
