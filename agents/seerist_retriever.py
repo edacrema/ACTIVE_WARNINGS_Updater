@@ -461,6 +461,16 @@ def run_seerist_retriever(state: ActiveWarningsState) -> ActiveWarningsState:
             max_per_query=20,
         )
 
+        # Cap total Seerist documents to avoid overwhelming downstream
+        # LLM agents (translation, event extraction) and Cloud Run memory.
+        MAX_SEERIST_DOCS = 20
+        if len(documents) > MAX_SEERIST_DOCS:
+            print(
+                f"   > Capping Seerist results from {len(documents)} "
+                f"to {MAX_SEERIST_DOCS}",
+            )
+            documents = documents[:MAX_SEERIST_DOCS]
+
         if state.get("documents") is None:
             state["documents"] = []
 

@@ -440,6 +440,16 @@ def run_reliefweb_retriever(state: ActiveWarningsState) -> ActiveWarningsState:
                 max_records=100,
             )
 
+        # Cap total ReliefWeb documents to avoid overwhelming downstream
+        # LLM agents (translation, event extraction) and Cloud Run memory.
+        MAX_RELIEFWEB_DOCS = 20
+        if len(documents) > MAX_RELIEFWEB_DOCS:
+            print(
+                f"   > Capping ReliefWeb results from {len(documents)} "
+                f"to {MAX_RELIEFWEB_DOCS}",
+            )
+            documents = documents[:MAX_RELIEFWEB_DOCS]
+
         if state.get("documents") is None:
             state["documents"] = []
 
