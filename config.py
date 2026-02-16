@@ -9,6 +9,7 @@ LOCATION = os.getenv("GCP_LOCATION", "us-central1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-pro")
 LLM_TEMPERATURE = 0
 LLM_MAX_TOKENS = 8192
+LLM_EXTRACTION_MAX_TOKENS = 16384  # Higher limit for single-pass event extraction
 
 # Cloud Run
 PORT = int(os.getenv("PORT", "8080"))

@@ -1,11 +1,11 @@
 """
-Agent 4: Event Extraction Agent (Map-Reduce)
-Extracts structured, traceable events from all documents.
+Agent 4: Event Extraction Agent (Single-Pass)
+Extracts structured, traceable events from all documents in a single LLM call.
 
-Implements a two-stage Map-Reduce process:
-1.  **Map:** An LLM call per document to extract raw "facts".
-2.  **Reduce:** A single LLM call to synthesize all facts into a
-    clean, deduplicated list of structured Event objects.
+Sends all documents (truncated) to the LLM at once, which extracts and
+deduplicates structured Event objects directly. This replaces the previous
+Map-Reduce approach (1 call per document) which was slow, memory-intensive,
+and prone to silent JSON parsing failures.
 
 Reads from:
 - state["documents"]
@@ -18,63 +18,31 @@ Writes to:
 
 import json
 import uuid
-from typing import List, TypedDict
+from typing import List
 
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_google_vertexai import ChatVertexAI
 
 from state import ActiveWarningsState, Event
-from llm import llm
+from config import (
+    PROJECT_ID,
+    LOCATION,
+    LLM_MODEL,
+    LLM_TEMPERATURE,
+    LLM_EXTRACTION_MAX_TOKENS,
+)
 
 
-class FactList(TypedDict):
-    """Schema for the 'Map' step output."""
-
-    facts: List[str]
-
-
-class EventList(TypedDict):
-    """Schema for the 'Reduce' step output."""
-
-    events: List[Event]
+# Maximum characters per document sent to the LLM.
+# 33 docs * 3000 chars ≈ 100k chars ≈ 25k tokens — well within Gemini's 1M context.
+MAX_DOC_CHARS = 3000
 
 
-# ===== 1. "MAP" PROMPT (Extracts raw facts from *one* doc) =====
-
-MAP_PROMPT_TEMPLATE = """
-You are a data extraction assistant. Your task is to read a single document and extract ALL key facts, figures, dates, and quoted statements relevant to humanitarian risks (conflict, economic, climate).
-
-**Document ID:** {doc_id}
-
-**Document Content:**
----
-{document_content}
----
-
-**Instructions:**
-1.  Read the text and identify all facts matching the risk ontology.
-2.  For *every* fact you extract, you MUST append the document ID as a tag, like this: `(doc_id: {doc_id})`.
-3.  Return a simple JSON list of fact strings.
-4.  If no relevant facts are found, return `{{"facts": []}}`.
-
-**Example Output:**
-{{
-    "facts": [
-        "Food inflation in City Y reached 15% in October. (doc_id: {doc_id})",
-        "Clashes between Group A and Group B displaced 5,000 people. (doc_id: {doc_id})",
-        "The Central Bank revised GDP growth down to 1.5%. (doc_id: {doc_id})"
-    ]
-}}
-"""
-
-
-# ===== 2. "REDUCE" PROMPT (Synthesizes *all* facts into Events) =====
-
-REDUCE_PROMPT_TEMPLATE = """
-You are a senior humanitarian analyst and data scientist. Your task is to read a large BATCH of raw facts extracted from multiple documents.
-You must synthesize these facts into a single, clean, and deduplicated list of structured `Event` objects.
+EXTRACTION_PROMPT_TEMPLATE = """
+You are a senior humanitarian data analyst. Your task is to read ALL of the following documents about **{country}** and extract a deduplicated list of structured humanitarian events.
 
 **Country of Focus:** {country}
-**Primary Risk Type:** {risk_type}
+**Primary Risk Types:** {risk_type}
 
 **Event Ontology to Follow:**
 - **Conflict Indicators:**
@@ -96,152 +64,176 @@ You must synthesize these facts into a single, clean, and deduplicated list of s
     - Temperature anomaly
     - Water reservoir levels
 
-**Batch of Raw Facts (with source IDs):**
+**DOCUMENTS ({doc_count} total):**
 ---
-{facts_list}
+{documents_block}
 ---
 
 **CRITICAL INSTRUCTIONS:**
-1.  **Read All Facts:** Process the entire list of facts.
-2.  **Deduplicate & Synthesize:** Identify *unique* events. If multiple facts report the same event (e.g., the same inflation figure from different sources), merge them into ONE event.
-3.  **Aggregate Sources:** When merging, you MUST aggregate all `(doc_id: ...)` tags into the final `source_ids` list for the event. This is critical for traceability.
-4.  **Adhere to Schema:** Fill in all fields for each event (`driver`, `event_type`, `date_start`, `actors`, `locations`, `figures`, `statement`, `certainty`, `novelty`).
-5.  **`event_id`:** Generate a unique ID for each event (e.g., `evt_uuid_...`).
-6.  **`statement`:** Write a 1-sentence summary of the event's key claim.
-7.  **`figures`:** Extract numerical data precisely (e.g., `{{"type": "food inflation", "value": 15, "unit": "%"}}`).
-8.  **Output:** Return *only* a valid JSON object matching the `EventList` schema: `{{"events": [Event, ...]}}`. If no events are synthesized, return `{{"events": []}}`.
+1.  **Read ALL documents** and identify every humanitarian event or development relevant to the risk types above.
+2.  **Deduplicate:** If multiple documents report the same event (e.g., the same inflation figure, the same displacement event), merge them into ONE event entry.
+3.  **source_ids (MANDATORY):** For every event, you MUST list ALL document IDs (from the headers above) that mention or support that event. This is critical for citation traceability.
+4.  **Adhere to Schema:** Fill in all fields for each event:
+    - `event_id`: Generate a short unique ID (e.g., `evt_001`, `evt_002`, etc.)
+    - `driver`: One of "conflict", "economic", or "climate"
+    - `event_type`: Specific type (e.g., "Fatalities", "Food inflation", "Displacement", "Currency depreciation")
+    - `date_start`: Best available date (ISO format or descriptive like "January 2026")
+    - `actors`: List of key actors involved (groups, institutions, etc.)
+    - `locations`: List of location objects, e.g., [{{"name": "Kabul", "type": "city"}}]
+    - `figures`: List of numerical data, e.g., [{{"type": "food inflation", "value": 15, "unit": "%"}}]
+    - `statement`: A 1-sentence factual summary of the event
+    - `source_ids`: List of document IDs that support this event (e.g., ["seerist_123", "reliefweb_456"])
+    - `certainty`: Confidence level 0.0-1.0 based on source agreement
+    - `novelty`: One of "new", "continuation", or "escalation"
+5.  **Extract precise figures:** Percentages, counts, rates, dates — be as specific as the source data allows.
+6.  **Output:** Return ONLY a valid JSON object: {{"events": [...]}}. No text before or after the JSON.
+    If no events are found, return {{"events": []}}.
 """
 
 
-def run_event_extractor(state: ActiveWarningsState) -> ActiveWarningsState:
-    """LangGraph node function to run the Map-Reduce Event Extraction.
+def _extract_json(text: str) -> dict:
+    """Robustly extract a JSON object from LLM output text.
 
-    (Corrected version using manual JSON parsing and corrected prompts.)
+    Handles: markdown fences, leading/trailing text, nested braces.
     """
+    cleaned = text.strip()
 
-    print(f"--- (4) Running Event Extractor (Map-Reduce) for {state['country']} ---")
+    # Strip markdown code fences
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Find the outermost JSON object by matching braces
+    start = cleaned.find("{")
+    if start == -1:
+        raise ValueError("No JSON object found in LLM output")
+
+    depth = 0
+    end = -1
+    for i in range(start, len(cleaned)):
+        if cleaned[i] == "{":
+            depth += 1
+        elif cleaned[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+
+    if end == -1:
+        raise ValueError("Unbalanced braces in LLM output")
+
+    return json.loads(cleaned[start : end + 1])
+
+
+def _build_documents_block(documents: list) -> str:
+    """Build the concatenated document text block for the prompt."""
+    parts = []
+    for doc in documents:
+        content = doc.get("content", "")
+        if not content:
+            continue
+
+        # Truncate long documents
+        if len(content) > MAX_DOC_CHARS:
+            content = content[:MAX_DOC_CHARS] + "... [truncated]"
+
+        source = doc.get("source", "Unknown")
+        date = doc.get("date", "Unknown")
+        title = doc.get("title", "")
+
+        header = f"=== Document {doc['doc_id']} (Source: {source}, Date: {date}) ==="
+        if title:
+            header += f"\nTitle: {title}"
+
+        parts.append(f"{header}\n{content}\n=== END {doc['doc_id']} ===")
+
+    return "\n\n".join(parts)
+
+
+def run_event_extractor(state: ActiveWarningsState) -> ActiveWarningsState:
+    """LangGraph node function: single-pass event extraction from all documents."""
+
+    print(f"--- (4) Running Event Extractor (Single-Pass) for {state['country']} ---")
 
     if state.get("documents") is None or not state["documents"]:
         print("   > No documents found to extract events from. Skipping.")
+        state["events"] = []
         state["current_step"] = "EventExtractionComplete"
         return state
 
     if state.get("warnings") is None:
         state["warnings"] = []
 
-    all_facts: List[str] = []
-
     try:
-        # -------------------------------------------------
-        # STEP 1: MAP (Extract facts from each document)
-        # -------------------------------------------------
-        print("   > Step 1 (Map): Extracting raw facts from documents...")
-        map_prompt = ChatPromptTemplate.from_template(MAP_PROMPT_TEMPLATE)
-        map_chain = map_prompt | llm
+        # Filter documents with actual content
+        docs_with_content = [d for d in state["documents"] if d.get("content")]
+        print(f"   > Processing {len(docs_with_content)} documents with content...")
 
-        doc_count = 0
-        for doc in state["documents"]:
-            if not doc.get("content"):
-                continue  # Skip docs with no content
-
-            doc_count += 1
-            try:
-                map_response = map_chain.invoke(
-                    {
-                        "doc_id": doc["doc_id"],
-                        "document_content": doc["content"],
-                    }
-                )
-                map_raw_output = map_response.content
-
-                # --- Manual JSON Parsing ---
-                try:
-                    if map_raw_output.strip().startswith("```json"):
-                        map_raw_output = map_raw_output.strip()[7:-3].strip()
-                    elif map_raw_output.strip().startswith("```"):
-                        map_raw_output = map_raw_output.strip()[3:-3].strip()
-
-                    facts_result = json.loads(map_raw_output)
-                    if "facts" not in facts_result or not isinstance(
-                        facts_result["facts"], list
-                    ):
-                        raise ValueError("Missing 'facts' key or it's not a list")
-                except (json.JSONDecodeError, ValueError) as parse_error:
-                    print(
-                        f"      ! WARN: Failed to parse JSON for doc {doc['doc_id']}: {parse_error}",
-                    )
-                    print(f"      Raw LLM Output:\n{map_raw_output}")
-                    state["warnings"].append(
-                        f"EventMapParseError (doc {doc['doc_id']}): {str(parse_error)}",
-                    )
-                    continue
-                # --- END Manual Parsing ---
-
-                all_facts.extend(facts_result["facts"])
-            except Exception as e:  # noqa: BLE001
-                print(
-                    f"      ! WARN: Failed LLM invoke for doc {doc['doc_id']}: {e}",
-                )
-                state["warnings"].append(
-                    f"EventMapInvokeError (doc {doc['doc_id']}): {str(e)}",
-                )
-
-        print(f"   > Mapped {len(all_facts)} facts from {doc_count} documents.")
-
-        # -------------------------------------------------
-        # STEP 2: REDUCE (Synthesize facts into Events)
-        # -------------------------------------------------
-        if not all_facts:
-            print("   > No facts extracted. Skipping Reduce step.")
+        if not docs_with_content:
+            print("   > All documents have empty content. Skipping extraction.")
             state["events"] = []
             state["current_step"] = "EventExtractionComplete"
             return state
 
-        print("   > Step 2 (Reduce): Synthesizing facts into unique events...")
-        reduce_prompt = ChatPromptTemplate.from_template(REDUCE_PROMPT_TEMPLATE)
-        reduce_chain = reduce_prompt | llm
+        # Build the concatenated document block
+        documents_block = _build_documents_block(docs_with_content)
+        print(
+            f"   > Document block size: {len(documents_block):,} chars "
+            f"(~{len(documents_block) // 4:,} tokens)",
+        )
 
-        facts_string = "\n".join(all_facts)
+        # Use a dedicated LLM with higher max_tokens for extraction
+        extraction_llm = ChatVertexAI(
+            model=LLM_MODEL,
+            project=PROJECT_ID,
+            location=LOCATION,
+            temperature=LLM_TEMPERATURE,
+            max_tokens=LLM_EXTRACTION_MAX_TOKENS,
+        )
 
-        reduce_response = reduce_chain.invoke(
+        prompt = ChatPromptTemplate.from_template(EXTRACTION_PROMPT_TEMPLATE)
+        chain = prompt | extraction_llm
+
+        print("   > Calling LLM for single-pass event extraction...")
+        response = chain.invoke(
             {
-                "facts_list": facts_string,
                 "country": state["country"],
                 "risk_type": ", ".join(state["risk_type"]),
+                "doc_count": len(docs_with_content),
+                "documents_block": documents_block,
             }
         )
-        reduce_raw_output = reduce_response.content
+        raw_output = response.content
+        print(f"   > LLM response received ({len(raw_output):,} chars)")
 
-        # --- Manual JSON Parsing ---
+        # Parse JSON with robust extractor
         try:
-            if reduce_raw_output.strip().startswith("```json"):
-                reduce_raw_output = reduce_raw_output.strip()[7:-3].strip()
-            elif reduce_raw_output.strip().startswith("```"):
-                reduce_raw_output = reduce_raw_output.strip()[3:-3].strip()
-
-            synthesis_result = json.loads(reduce_raw_output)
-            if "events" not in synthesis_result or not isinstance(
-                synthesis_result["events"], list
-            ):
+            result = _extract_json(raw_output)
+            if "events" not in result or not isinstance(result["events"], list):
                 raise ValueError("Missing 'events' key or it's not a list")
         except (json.JSONDecodeError, ValueError) as parse_error:
-            print(
-                f"   ! ERROR: Failed to parse JSON in Reduce step: {parse_error}",
+            print(f"   ! ERROR: Failed to parse JSON from LLM: {parse_error}")
+            print(f"   Raw LLM Output (first 500 chars):\n{raw_output[:500]}")
+            state["warnings"].append(
+                f"EventExtractorParseError: {str(parse_error)}"
             )
-            print(f"   Raw LLM Output:\n{reduce_raw_output}")
-            raise ValueError(
-                "LLM did not return valid JSON for EventList. "
-                f"Raw output: {reduce_raw_output}"
-            ) from parse_error
-        # --- END Manual Parsing ---
+            state["events"] = []
+            state["current_step"] = "EventExtractionComplete"
+            return state
 
-        extracted_events = synthesis_result["events"]
-
-        # -------------------------------------------------
-        # STEP 3: Post-processing and State Update
-        # -------------------------------------------------
+        # Post-process events
         final_events: List[Event] = []
-        for event in extracted_events:
+        for event in result["events"]:
             if isinstance(event, dict):
                 event["country"] = state["country"]
                 if not event.get("event_id"):
@@ -249,20 +241,16 @@ def run_event_extractor(state: ActiveWarningsState) -> ActiveWarningsState:
                 final_events.append(event)  # type: ignore[list-item]
             else:
                 print(
-                    "   ! WARN: Item in 'events' list was not a dictionary: "
-                    f"{event}",
+                    f"   ! WARN: Item in 'events' list was not a dict: {event}",
                 )
 
         state["events"] = final_events
-        print(
-            f"   > Reduce complete: Synthesized {len(final_events)} unique events.",
-        )
+        print(f"   > Extracted {len(final_events)} unique events.")
         state["current_step"] = "EventExtractionComplete"
 
     except Exception as e:  # noqa: BLE001
         print(f"   ! ERROR in Event Extractor: {e}")
-        if state.get("warnings") is None:
-            state["warnings"] = []
         state["warnings"].append(f"EventExtractorError: {str(e)}")
+        state["events"] = []
 
     return state
