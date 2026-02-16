@@ -32,11 +32,13 @@ class SeeristRetriever:
     - Fetches curated analyst reports (not raw news)
     - Supports Lucene query syntax via the 'search' parameter
     - Geographic filtering via aoiId (ISO 2-letter country codes)
-    - Topic-based filtering (travel, unrest, transportation, health,
-      terrorism, conflict, disaster, crime)
     - Pagination support
     - No web scraping needed (content returned directly in API response)
     - Built-in rate limiting and retry logic
+
+    Note: The 'topic' parameter (conflict, unrest, etc.) does NOT work
+    with sources=analysis and returns 0 results. Country filtering via
+    aoiId and free-text search are the effective filters for analysis.
 
     Response schema (discovered via API testing):
     - properties.title: {"en": "..."} - dict keyed by language
@@ -53,13 +55,6 @@ class SeeristRetriever:
 
     MAX_RETRIES = 3
     REQUEST_DELAY = 0.5  # Seconds between requests to avoid rate limiting
-
-    # Map risk_type values to Seerist topic parameters
-    RISK_TYPE_TO_TOPICS = {
-        "conflict": ["conflict", "unrest", "terrorism", "crime"],
-        "economic": ["unrest", "transportation"],
-        "natural hazard": ["disaster", "health"],
-    }
 
     # Country name -> ISO 2-letter code for Seerist aoiId parameter
     COUNTRY_CODES = {
@@ -142,14 +137,6 @@ class SeeristRetriever:
     def _get_country_code(self, country: str) -> Optional[str]:
         """Resolve country name to ISO 2-letter code for aoiId."""
         return self.COUNTRY_CODES.get(country, None)
-
-    def _get_topics_for_risk_types(self, risk_types: List[str]) -> List[str]:
-        """Map risk types to Seerist topic parameters."""
-        topics = set()
-        for rt in risk_types:
-            mapped = self.RISK_TYPE_TO_TOPICS.get(rt.lower(), [])
-            topics.update(mapped)
-        return list(topics)
 
     @staticmethod
     def _strip_html(html_text: str) -> str:
@@ -235,8 +222,7 @@ class SeeristRetriever:
         ]
 
         # Seerist analysis reports don't have a severity score,
-        # so we use position-based relevance (same approach as GDELT)
-        # Higher index = lower relevance
+        # so we use position-based relevance (higher index = lower relevance)
         relevance = max(0.5, 1.0 - (idx * 0.05))
 
         # Detect language from the available text fields
@@ -275,17 +261,16 @@ class SeeristRetriever:
         start_date: str,
         end_date: str,
         country: Optional[str] = None,
-        risk_types: Optional[List[str]] = None,
         max_records: int = 50,
     ) -> List[Dict]:
         """Fetch analyst reports from Seerist API.
 
         Args:
-            search_query: Lucene syntax search string.
+            search_query: Search string (simple terms or Lucene syntax).
+                Can be empty to fetch all reports matching other filters.
             start_date: Start date in ISO format (YYYY-MM-DD or full ISO 8601).
             end_date: End date in ISO format.
             country: Country name (resolved to aoiId).
-            risk_types: List of risk types to map to topics.
             max_records: Max results per request.
 
         Returns:
@@ -318,13 +303,10 @@ class SeeristRetriever:
                 if self.verbose:
                     print(f"   >   Country filter: {country} -> {country_code}")
 
-        # Add topic filter from risk types
-        if risk_types:
-            topics = self._get_topics_for_risk_types(risk_types)
-            if topics:
-                params["topic"] = ",".join(topics)
-                if self.verbose:
-                    print(f"   >   Topics: {params['topic']}")
+        # Note: the 'topic' parameter is NOT used here because it returns
+        # 0 results when combined with sources=analysis. Topic categories
+        # (conflict, unrest, etc.) only apply to event-type sources.
+        # Country filtering via aoiId + free-text search are effective.
 
         headers = {"x-api-key": self.api_key}
 
@@ -378,17 +360,15 @@ class SeeristRetriever:
         start_date: str,
         end_date: str,
         country: Optional[str] = None,
-        risk_types: Optional[List[str]] = None,
         max_per_query: int = 20,
     ) -> List[Dict]:
         """Fetch reports for multiple queries, then deduplicate.
 
         Args:
-            queries: List of Lucene search queries.
+            queries: List of search queries (simple terms or Lucene syntax).
             start_date: Start date in ISO format.
             end_date: End date in ISO format.
             country: Country name for geographic filtering.
-            risk_types: List of risk types for topic mapping.
             max_per_query: Max results per query.
 
         Returns:
@@ -403,7 +383,6 @@ class SeeristRetriever:
                 start_date=start_date,
                 end_date=end_date,
                 country=country,
-                risk_types=risk_types,
                 max_records=max_per_query,
             )
 
@@ -460,23 +439,25 @@ def run_seerist_retriever(state: ActiveWarningsState) -> ActiveWarningsState:
         # Get base queries from the search plan
         base_queries = [q["query"] for q in news_queries]
 
-        # Add fallback queries (Lucene syntax with AND operator)
-        if base_queries:
-            print("   > Adding broad fallback queries...")
-            base_queries.append(f"{state['country']} AND economic")
-            base_queries.append(f"{state['country']} AND political")
+        # Add fallback queries (simple terms, no AND -- Lucene AND is too
+        # restrictive for analysis reports and drastically reduces results)
+        print("   > Adding broad fallback queries...")
+        base_queries.append(f"{state['country']} economic")
+        base_queries.append(f"{state['country']} political")
+
+        # Also add an empty query to fetch ALL reports for this country
+        # within the date range (aoiId filtering handles the country).
+        # This is the most reliable way to get results from Seerist.
+        base_queries.append("")
 
         # Note: preferred_domains is not used for Seerist.
         # Seerist returns curated analyst reports, not web articles.
-
-        risk_types = state.get("risk_type", [])
 
         documents = retriever.fetch_batch(
             queries=base_queries,
             start_date=state["update_period_start"],
             end_date=state["update_period_end"],
             country=state["country"],
-            risk_types=risk_types,
             max_per_query=20,
         )
 
