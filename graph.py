@@ -12,7 +12,7 @@ from langgraph.graph import END, StateGraph
 from state import ActiveWarningsState
 from config import MAX_CORRECTION_ATTEMPTS
 from agents.query_planner import run_query_planner
-from agents.gdelt_retriever import run_gdelt_retriever
+from agents.seerist_retriever import run_seerist_retriever
 from agents.reliefweb_retriever import run_reliefweb_retriever
 from agents.translator import run_translation_agent
 from agents.event_extractor import run_event_extractor
@@ -58,7 +58,7 @@ workflow = StateGraph(ActiveWarningsState)
 
 # 1. Add all nodes (9 agents + 2 retrievers)
 workflow.add_node("planner", run_query_planner)
-workflow.add_node("gdelt_retriever", run_gdelt_retriever)
+workflow.add_node("seerist_retriever", run_seerist_retriever)
 workflow.add_node("reliefweb_retriever", run_reliefweb_retriever)
 workflow.add_node("translator", run_translation_agent)
 workflow.add_node("extractor", run_event_extractor)
@@ -72,8 +72,8 @@ workflow.add_node("status_recommender", run_status_recommendation)
 workflow.set_entry_point("planner")
 
 # 3. Data Gathering (serial execution)
-workflow.add_edge("planner", "gdelt_retriever")
-workflow.add_edge("gdelt_retriever", "reliefweb_retriever")
+workflow.add_edge("planner", "seerist_retriever")
+workflow.add_edge("seerist_retriever", "reliefweb_retriever")
 
 # 4. Processing and Analysis
 workflow.add_edge("reliefweb_retriever", "translator")

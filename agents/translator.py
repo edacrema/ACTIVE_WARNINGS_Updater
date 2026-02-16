@@ -21,7 +21,7 @@ from state import ActiveWarningsState
 from llm import llm
 
 
-# A set of common English language identifiers from GDELT and ReliefWeb
+# A set of common English language identifiers from Seerist and ReliefWeb
 ENGLISH_LANG_CODES = {"en", "eng", "english"}
 
 

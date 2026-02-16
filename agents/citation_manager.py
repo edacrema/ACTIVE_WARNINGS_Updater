@@ -30,8 +30,8 @@ def _get_reliability_score(doc: Document) -> float:
 
     if "reliefweb" in source_name:
         return 1.0  # UN/INGO reports
-    if "gdelt" in source_name:
-        return 0.85  # International media
+    if "seerist" in source_name:
+        return 0.95  # Professional analyst reports
 
     # Default for other/local media
     return 0.75

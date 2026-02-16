@@ -102,7 +102,7 @@ def build_initial_state(
 # ---------------------------------------------------------------------------
 NODE_LABELS = {
     "planner": "Query Planner",
-    "gdelt_retriever": "GDELT Retriever",
+    "seerist_retriever": "Seerist Retriever",
     "reliefweb_retriever": "ReliefWeb Retriever",
     "translator": "Translator",
     "extractor": "Event Extractor",
@@ -120,10 +120,10 @@ def _node_metrics(node_name: str, output_state: dict) -> str:
         plan = output_state.get("search_plan") or {}
         n = len(plan.get("queries", []))
         return f"{n} queries generated"
-    if node_name == "gdelt_retriever":
+    if node_name == "seerist_retriever":
         docs = output_state.get("documents", [])
-        gdelt = sum(1 for d in docs if d.get("source") == "GDELT")
-        return f"{gdelt} GDELT articles"
+        seerist = sum(1 for d in docs if d.get("source") == "Seerist")
+        return f"{seerist} Seerist reports"
     if node_name == "reliefweb_retriever":
         docs = output_state.get("documents", [])
         rw = sum(1 for d in docs if "ReliefWeb" in d.get("source", ""))

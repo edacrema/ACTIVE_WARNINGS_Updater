@@ -12,7 +12,7 @@ class SearchQuery(TypedDict):
     """Individual search query with metadata"""
     query: str
     source_type: Literal["news", "un_reports", "economic", "climate"]
-    data_source: str  # e.g., "GDELT", "ReliefWeb", "IMF"
+    data_source: str  # e.g., "Seerist", "ReliefWeb", "IMF"
     priority: Literal["high", "medium", "low"]
 
 

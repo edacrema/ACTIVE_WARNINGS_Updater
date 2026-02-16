@@ -69,7 +69,7 @@ gcloud run deploy "${SERVICE_NAME}" \
     --concurrency 4 \
     --min-instances 0 \
     --max-instances 3 \
-    --set-env-vars "GCP_PROJECT_ID=${PROJECT_ID},GCP_LOCATION=${REGION},LLM_MODEL=gemini-2.5-pro,RELIEFWEB_APPNAME=WFP-EW-gFDVc8Qw15Cx7" \
+    --set-env-vars "GCP_PROJECT_ID=${PROJECT_ID},GCP_LOCATION=${REGION},LLM_MODEL=gemini-2.5-pro,RELIEFWEB_APPNAME=WFP-EW-gFDVc8Qw15Cx7,SEERIST_API_KEY=${SEERIST_API_KEY}" \
     --quiet
 
 # ---------------------------------------------------------------------------

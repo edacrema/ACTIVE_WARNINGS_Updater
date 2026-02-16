@@ -15,6 +15,9 @@ PORT = int(os.getenv("PORT", "8080"))
 
 # API Keys
 RELIEFWEB_APPNAME = os.getenv("RELIEFWEB_APPNAME", "WFP-EW-gFDVc8Qw15Cx7")
+SEERIST_API_KEY = os.getenv("SEERIST_API_KEY", "")
+SEERIST_BASE_URL = "https://app.seerist.com/hyperionapi/v1/wod"
+SEERIST_DEFAULT_PAGE_SIZE = 50
 
 # Graph
 MAX_CORRECTION_ATTEMPTS = 3

@@ -7,7 +7,10 @@
       "Bash(cd:*)",
       "Bash(wc:*)",
       "Bash(python -m py_compile:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "WebFetch(domain:seerist.docs.apiary.io)",
+      "Read(//c/Users/eugen/VAM LLM Materials/vam-llm/VAM LLM - Prototypes/**)",
+      "WebFetch(domain:jsapi.apiary.io)"
     ]
   }
 }

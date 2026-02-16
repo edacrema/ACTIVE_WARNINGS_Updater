@@ -32,7 +32,10 @@ Your goal is to generate 5-10 specific, targeted search queries to find new deve
     - 'conflict': Prioritize sources like ACLED, ReliefWeb... [cite: 33, 34]
     - 'natural hazard': Prioritize sources like NOAA, ReliefWeb...
     Your strategy must gather information for ALL of the listed risk types.
-3. **Generate Queries:** Create 5-10 queries. Most should be specific, but include 1-2 broader "fallback" queries (e.g., "Bolivia economic crisis 2025", "Bolivia political situation 2025") to ensure some results are returned.
+    - For analyst report queries targeting Seerist: Use Lucene-compatible search syntax (e.g., "Bolivia AND inflation", "Sudan AND conflict AND displacement").
+      Seerist supports the following topic categories: travel, unrest, transportation, health, terrorism, conflict, disaster, crime.
+      Set data_source to "Seerist" for these queries.
+3. **Generate Queries:** Create 5-10 queries. Most should be specific, but include 1-2 broader "fallback" queries (e.g., "Bolivia AND economic crisis", "Bolivia AND political situation") to ensure some results are returned.
 4.  **Format Output:** You MUST return *only* a valid JSON object that adheres to the `SearchPlan` schema.
     - `key_themes` and `key_actors` should be extracted from the previous warning. [cite: 25, 26]
     - `rationale` should briefly explain *why* this search plan is effective.
@@ -43,7 +46,7 @@ Your goal is to generate 5-10 specific, targeted search queries to find new deve
         {{
             "query": "str (specific search query)",
             "source_type": "Literal['news', 'un_reports', 'economic', 'climate']",
-            "data_source": "str (e.g., 'GDELT', 'ReliefWeb', 'IMF', 'ACLED')",
+            "data_source": "str (e.g., 'Seerist', 'ReliefWeb', 'IMF', 'ACLED')",
             "priority": "Literal['high', 'medium', 'low']"
         }}
     ],
